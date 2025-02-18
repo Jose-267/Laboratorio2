@@ -40,7 +40,7 @@ SETUP:
     LDI R16, 0x00
     OUT DDRC, R16         ; PORTC como entrada
 	LDI R16, 0x04
-    OUT DDRC, R16         ; PORTC bit 3 como salida
+    OUT DDRC, R16         ; PORTC bit 2 como salida
 	OUT PORTC, R16
     LDI R16, 0xFF
     OUT PORTC, R16        ; Activar resistencias pull-up en PORTC
@@ -148,7 +148,7 @@ WAIT_OVF:
 
     ; Si se han acumulado 100 desbordamientos, reiniciar overflow_count
     CLR overflow_count
-
+	-+
     ; Incrementar el contador binario (4 bits)
     INC binary_counter
     ; Si el valor llega a 16 (0x10) lo reiniciamos a 0
