@@ -1,0 +1,259 @@
+.include "M328PDEF.inc"
+.equ TABLA = 0x0100      ; Dirección de inicio de la tabla en SRAM
+
+.cseg
+.org 0x0000
+RJMP SETUP              ; Salto inicial a la rutina de configuración
+
+; Alias para registros:
+.def binary_counter = R23   ; Contador binario (valor de 0 a 15)
+.def overflow_count = R24   ; Contador para contar los desbordamientos del Timer0 (para 100ms)
+.def temp         = R19     ; Registro temporal
+.def temp2        = R25     ; Registro temporal adicional
+
+SETUP:
+
+	; Configurar la pila
+    LDI temp, LOW(RAMEND)
+    OUT SPL, temp
+    LDI temp, HIGH(RAMEND)
+    OUT SPH, temp
+	; Configuración del reloj:
+    ; Suponiendo un oscilador de 16MHz, se utiliza el prescaler del sistema para obtener 1MHz.
+    LDI temp, (1 << CLKPCE)
+    STS CLKPR, temp         ; Habilitar cambio de prescaler
+    LDI temp, 0b00000100    ; Dividir por 16 (16MHz/16 = 1MHz)
+    STS CLKPR, temp
+
+    ; Inicializar Timer0
+    CALL INIT_TMR0
+
+    ; Configurar los primeros 4 bits de PORTB como salida (PB0 a PB3)
+    LDI temp, 0x0F          ; 0x0F = 0000 1111
+    OUT DDRB, temp
+
+    ; Inicializar los contadores a 0
+    CLR binary_counter
+    CLR overflow_count
+
+    ; Configuración de PORTC como entrada y habilitación de pull-ups
+    LDI R16, 0x00
+    OUT DDRC, R16         ; PORTC como entrada
+	LDI R16, 0x04
+    OUT DDRC, R16         ; PORTC bit 3 como salida
+	OUT PORTC, R16
+    LDI R16, 0xFF
+    OUT PORTC, R16        ; Activar resistencias pull-up en PORTC
+
+    ; Configuración de PORTD como salida para el display
+    LDI R16, 0xFF
+    OUT DDRD, R16         ; PORTD como salida
+
+    ; Inicializa el contador (R20) y el estado anterior de los botones (R17)
+    LDI R20, 0x01         ; Contador en 0
+    LDI R17, 0xFF         ; Estado inicial de los botones
+	LDI R16, 0x12
+    OUT PORTD, R16        ; Valor inicial en el display
+
+    ; Inicialización de la tabla de patrones en SRAM (dirección TABLA)
+    LDI XL, low(TABLA)
+    LDI XH, high(TABLA)
+    
+	
+    LDI R21, 0x7F
+    ST X+, R21
+    LDI R21, 0x12
+    ST X+, R21
+    LDI R21, 0xBC
+    ST X+, R21
+    LDI R21, 0xB6
+    ST X+, R21
+    LDI R21, 0xD2
+    ST X+, R21
+    LDI R21, 0xE6
+    ST X+, R21
+    LDI R21, 0xEE
+    ST X+, R21
+    LDI R21, 0x32
+    ST X+, R21
+    LDI R21, 0xFE
+    ST X+, R21
+    LDI R21, 0xF6
+    ST X+, R21
+    LDI R21, 0xFA
+    ST X+, R21
+    LDI R21, 0xCE
+    ST X+, R21
+    LDI R21, 0x6C
+    ST X+, R21
+    LDI R21, 0x9E
+    ST X+, R21
+    LDI R21, 0xEC
+    ST X+, R21
+    LDI R21, 0xE8
+    ST X+, R21
+
+    ; Reestablece el puntero X a la dirección base de la tabla (para posteriores lecturas)
+    LDI XL, low(TABLA)
+    LDI XH, high(TABLA)
+	LDI R21, 0x01
+	
+MAIN_LOOP:
+LOOP:
+	
+    IN R16, PINC         ; Leer el estado de los botones en PORTC
+    CP R17, R16
+    BREQ WAIT_OVF        ; Se dirige para poder mantener los leds en funcionamiento    
+    CALL DELAY           ; Retardo para evitar rebotes
+    IN R16, PINC         ; Lee nuevamente para confirmar
+    CP R17, R16
+    BREQ LOOP
+    MOV R17, R16         ; Actualiza el estado anterior
+
+    ; Si se presiona el botón en PC1 (activo en nivel 0)
+    SBRC R16, 1         ; Salta la siguiente instrucción si bit 1 está en 1 (no presionado)
+    RJMP SKIP_INCR1
+    CALL INCR1
+SKIP_INCR1:
+    ; Si se presiona el botón en PC0 (activo en nivel 0)
+    SBRC R16, 0
+    RJMP SKIP_DECR1
+    CALL DECR1
+SKIP_DECR1:
+    RJMP LOOP
+
+
+
+	
+
+
+WAIT_OVF:
+    IN temp, TIFR0
+    SBRS temp, TOV0         ; Si TOV0 está en 1, salta la siguiente instrucción
+    RJMP WAIT_OVF           ; Si TOV0 no está, seguir esperando
+
+    ; Limpiar la bandera de desbordamiento escribiendo 1 en TOV0
+    SBI TIFR0, TOV0
+
+    ; Recargar Timer0 con el valor inicial (100)
+    LDI temp, 100
+    OUT TCNT0, temp
+
+    ; Incrementar el contador de desbordamientos
+    INC overflow_count
+
+    ; Cada 100 desbordamientos se aproxima un intervalo de 1s:
+    CPI overflow_count, 100
+    BRNE MAIN_LOOP         ; Si no son 100, volver al inicio del bucle
+
+    ; Si se han acumulado 100 desbordamientos, reiniciar overflow_count
+    CLR overflow_count
+
+    ; Incrementar el contador binario (4 bits)
+    INC binary_counter
+    ; Si el valor llega a 16 (0x10) lo reiniciamos a 0
+	RJMP COMPARE
+	RETURN:
+    CP binary_counter, R21
+    BRNE UPDATE_OUTPUT
+	SBI PINC, 2              ; Y cambia el estado (toggle) del bit 2 en PINC
+    CLR binary_counter
+
+UPDATE_OUTPUT:
+    ; Actualizar la salida en los 4 bits inferiores de PORTB
+    ; Se preservan los 4 bits superiores (por si se usan para otra función)
+    IN temp, PORTB
+    ANDI temp, 0xF0         ; Limpiar los 4 bits inferiores
+    MOV temp2, binary_counter  ; Copiar el contador en temp2
+    OR  temp2, temp         ; Combinar el valor del contador con los bits superiores de PORTB
+    OUT PORTB, temp2
+
+    RJMP MAIN_LOOP
+
+INIT_TMR0:
+    ; Configurar Timer0 en modo normal con prescaler 64.
+    ; Con F_CPU = 1MHz y prescaler 64, cada tick dura 64 μs.
+    ; Cargando TCNT0 con 100, se cuentan 256 - 100 = 156 ticks,
+    ; lo que da aproximadamente 156 × 64μs ≈ 10ms de retardo por overflow.
+    LDI temp, (1<<CS01) | (1<<CS00)
+    OUT TCCR0B, temp
+    LDI temp, 100
+    OUT TCNT0, temp
+    RET
+
+COMPARE:
+	
+    MOV R21, R20             
+    
+	RJMP RETURN
+
+INCR1:
+    INC R20             ; Incrementa el contador
+    CPI R20, 16         ; Si el contador llega a 16 (0x10)
+    BRLO NO_WRAP_INC
+    LDI R20, 0          ; Reinicia a 0
+NO_WRAP_INC:
+    ; Carga la dirección base de la tabla en el puntero X
+    LDI XL, low(TABLA)
+    LDI XH, high(TABLA)
+    MOV R23, R20        ; R23 será el contador de desplazamiento
+OFFSET_LOOP_INCR:
+    CPI R23, 0          ; Si R23 es 0, ya se llegó al elemento deseado
+    BRNE OFFSET_LOOP_INCR_LOOP
+    RJMP LOAD_DISPLAY_INCR
+OFFSET_LOOP_INCR_LOOP:
+    ADIW X, 1           ; Incrementa el puntero X
+    DEC R23             ; Decrementa el contador de desplazamiento
+    RJMP OFFSET_LOOP_INCR
+LOAD_DISPLAY_INCR:
+    LD R21, X           ; Carga el patrón correspondiente en R21
+    OUT PORTD, R21      ; Actualiza el display de siete segmentos
+    RET
+
+;-----------------------------------------------------------
+; Subrutina DECR1: Decrementa el contador (si es 0 lo envuelve a 15),
+; recorre la tabla y actualiza el display.
+DECR1:
+    CPI R20, 0
+    BRNE DECR_CONTINUE
+    LDI R20, 15         ; Si el contador es 0, se envuelve a 15
+    RJMP LOAD_DISPLAY_DECR
+DECR_CONTINUE:
+    DEC R20
+LOAD_DISPLAY_DECR:
+    ; Carga la dirección base de la tabla en el puntero X
+    LDI XL, low(TABLA)
+    LDI XH, high(TABLA)
+    MOV R23, R20        ; R23 se usará para desplazar el puntero
+OFFSET_LOOP_DECR:
+    CPI R23, 0
+    BRNE OFFSET_LOOP_DECR_LOOP
+    RJMP LOAD_DISPLAY_DECR_FIN
+OFFSET_LOOP_DECR_LOOP:
+    ADIW X, 1
+    DEC R23
+    RJMP OFFSET_LOOP_DECR
+LOAD_DISPLAY_DECR_FIN:
+    LD R21, X
+    OUT PORTD, R21
+    RET
+
+;-----------------------------------------------------------
+; Subrutina DELAY: Retardo para la eliminación de rebotes
+DELAY:
+    LDI R18, 0
+DELAY_LOOP1:
+    INC R18
+    CPI R18, 0
+    BRNE DELAY_LOOP1
+    LDI R18, 0
+DELAY_LOOP2:
+    INC R18
+    CPI R18, 0
+    BRNE DELAY_LOOP2
+    LDI R18, 0
+DELAY_LOOP3:
+    INC R18
+    CPI R18, 0
+    BRNE DELAY_LOOP3
+    RET
